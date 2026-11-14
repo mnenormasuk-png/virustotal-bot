@@ -16,7 +16,7 @@ VT_API = "https://www.virustotal.com/api/v3"
 
 VIDEO_EXTENSIONS = (
     ".gif", ".mp4", ".mov", ".webm", ".avi",
-    ".mkv", ".mpeg", ".mpg", ".3gp"
+    ".mkv", ".mpeg", ".mpg", ".3gp", ".m4v"
 )
 
 
@@ -124,21 +124,21 @@ def webhook():
     if message.get("text") == "/start":
         send(chat_id, "Привет! Отправь мне файл для проверки VirusTotal.")
 
+    elif message.get("video") or message.get("animation"):
+        return "OK"
+
     elif message.get("document"):
         doc = message["document"]
         name = (doc.get("file_name") or "").lower()
 
         if name.endswith(VIDEO_EXTENSIONS):
-            send(chat_id, "Отправь обычный файл, не GIF и не видео.")
-        else:
-            threading.Thread(
-                target=scan,
-                args=(chat_id, doc),
-                daemon=True
-            ).start()
+            return "OK"
 
-    elif message.get("video") or message.get("animation"):
-        send(chat_id, "Видео и GIF проверять нельзя. Отправь обычный файл.")
+        threading.Thread(
+            target=scan,
+            args=(chat_id, doc),
+            daemon=True
+        ).start()
 
     return "OK"
 
@@ -155,3 +155,4 @@ if url:
         print("WEBHOOK:", response.status_code, response.text)
     except Exception as e:
         print("WEBHOOK ERROR:", repr(e))
+    
