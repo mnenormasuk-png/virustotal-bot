@@ -14,6 +14,8 @@ VT = os.environ["VT_API_KEY"]
 TG_API = f"https://api.telegram.org/bot{TG}"
 VT_API = "https://www.virustotal.com/api/v3"
 
+MAX_SIZE = 50 * 1024 * 1024
+
 VIDEO_EXTENSIONS = (
     ".gif", ".mp4", ".mov", ".webm", ".avi",
     ".mkv", ".mpeg", ".mpg", ".3gp", ".m4v"
@@ -47,14 +49,14 @@ def scan(chat_id, doc):
         file_id = doc["file_id"]
         name = doc.get("file_name") or "file"
 
-        if doc.get("file_size", 0) > 20 * 1024 * 1024:
-            send(chat_id, "Файл больше 20 МБ.")
+        if doc.get("file_size", 0) > MAX_SIZE:
+            send(chat_id, "Файл больше 50 МБ.")
             return
 
         info_response = requests.get(
             TG_API + "/getFile",
             params={"file_id": file_id},
-            timeout=20
+            timeout=30
         )
         info_response.raise_for_status()
         info = info_response.json()
@@ -67,17 +69,21 @@ def scan(chat_id, doc):
 
         content = requests.get(
             f"https://api.telegram.org/file/bot{TG}/{path}",
-            timeout=60
+            timeout=120
         )
         content.raise_for_status()
 
-        # Проверяем настоящий тип файла по содержимому
-        file_start = content.content[:16]
+        file_data = content.content
+
+        # Дополнительная проверка формата
+        file_start = file_data[:16]
 
         if (
             file_start[:3] == b"GIF"
-            or file_start[:4] == b"RIFF"
-            and file_start[8:12] == b"WEBP"
+            or (
+                file_start[:4] == b"RIFF"
+                and file_start[8:12] == b"WEBP"
+            )
             or file_start[4:8] == b"ftyp"
             or file_start[:4] == b"\x1a\x45\xdf\xa3"
         ):
@@ -89,14 +95,14 @@ def scan(chat_id, doc):
         response = requests.post(
             VT_API + "/files",
             headers={"x-apikey": VT},
-            files={"file": (name, content.content)},
-            timeout=180
+            files={"file": (name, file_data)},
+            timeout=300
         )
         response.raise_for_status()
 
         analysis_id = response.json()["data"]["id"]
 
-        for _ in range(18):
+        for _ in range(24):
             time.sleep(10)
 
             result = requests.get(
@@ -118,7 +124,7 @@ def scan(chat_id, doc):
         sha = data.get("meta", {}).get("file_info", {}).get("sha256")
 
         if not sha:
-            sha = hashlib.sha256(content.content).hexdigest()
+            sha = hashlib.sha256(file_data).hexdigest()
 
         report = (
             "✅ Проверка завершена!\n\n"
