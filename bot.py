@@ -2,6 +2,7 @@
 import os
 import time
 import threading
+import hashlib
 import requests
 from flask import Flask, request
 
@@ -13,6 +14,7 @@ VT = os.environ["VT_API_KEY"]
 TG_API = f"https://api.telegram.org/bot{TG}"
 VT_API = "https://www.virustotal.com/api/v3"
 
+
 def send(chat_id, text):
     requests.post(
         TG_API + "/sendMessage",
@@ -20,13 +22,14 @@ def send(chat_id, text):
         timeout=20
     )
 
+
 def scan(chat_id, doc):
     try:
         file_id = doc["file_id"]
         name = doc.get("file_name", "file")
 
         if doc.get("file_size", 0) > 20 * 1024 * 1024:
-            send(chat_id, "Файл больше 20 МБ. Отправь файл поменьше.")
+            send(chat_id, "Файл больше 20 МБ.")
             return
 
         info = requests.get(
@@ -81,7 +84,6 @@ def scan(chat_id, doc):
         sha = data.get("meta", {}).get("file_info", {}).get("sha256")
 
         if not sha:
-            import hashlib
             sha = hashlib.sha256(content.content).hexdigest()
 
         report = (
@@ -99,22 +101,24 @@ def scan(chat_id, doc):
         print("ERROR:", repr(e))
         send(chat_id, "Ошибка проверки. Попробуй позже.")
 
+
 @app.route("/", methods=["GET"])
 def home():
     return "VirusTotal bot is running!"
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = request.get_json(silent=True) or {}
     message = update.get("message", {})
-    chat = message.get("chat", {})
-    chat_id = chat.get("id")
+    chat_id = message.get("chat", {}).get("id")
 
     if not chat_id:
         return "OK"
 
     if message.get("text") == "/start":
         send(chat_id, "Привет! Отправь мне файл для проверки VirusTotal.")
+
     elif message.get("document"):
         threading.Thread(
             target=scan,
@@ -124,15 +128,18 @@ def webhook():
 
     return "OK"
 
-if __name__ == "__main__":
-    url = os.environ.get("RENDER_EXTERNAL_URL")
 
-    if url:
-        requests.post(
+# Установка webhook при запуске Gunicorn на Render
+url = os.environ.get("RENDER_EXTERNAL_URL")
+
+if url:
+    try:
+        response = requests.post(
             TG_API + "/setWebhook",
             json={"url": url + "/webhook"},
             timeout=20
         )
-
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-      
+        print("WEBHOOK:", response.status_code, response.text)
+    except Exception as e:
+        print("WEBHOOK ERROR:", repr(e))
+    
