@@ -44,6 +44,26 @@ def is_video_or_gif(doc):
     )
 
 
+def has_video_or_gif_signature(data):
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return True
+
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return True
+
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return True
+
+    if (
+        len(data) >= 12
+        and data[:4] == b"RIFF"
+        and data[8:12] == b"AVI "
+    ):
+        return True
+
+    return False
+
+
 def scan(chat_id, doc):
     try:
         file_id = doc["file_id"]
@@ -72,22 +92,13 @@ def scan(chat_id, doc):
             timeout=120
         )
         content.raise_for_status()
-
         file_data = content.content
 
-        # Дополнительная проверка формата
-        file_start = file_data[:16]
+        if len(file_data) > MAX_SIZE:
+            send(chat_id, "Файл больше 50 МБ.")
+            return
 
-        if (
-            file_start[:3] == b"GIF"
-            or (
-                file_start[:4] == b"RIFF"
-                and file_start[8:12] == b"WEBP"
-            )
-            or file_start[4:8] == b"ftyp"
-            or file_start[:4] == b"\x1a\x45\xdf\xa3"
-        ):
-            send(chat_id, "Видео и GIF не проверяются.")
+        if has_video_or_gif_signature(file_data):
             return
 
         send(chat_id, "🔍 Отправляю файл на проверку VirusTotal...")
@@ -102,6 +113,8 @@ def scan(chat_id, doc):
 
         analysis_id = response.json()["data"]["id"]
 
+        data = {}
+
         for _ in range(24):
             time.sleep(10)
 
@@ -115,27 +128,75 @@ def scan(chat_id, doc):
             data = result.json()["data"]["attributes"]
 
             if data.get("status") == "completed":
-                stats = data.get("stats", {})
                 break
         else:
             send(chat_id, "Проверка ещё выполняется. Попробуй позже.")
             return
 
-        sha = data.get("meta", {}).get("file_info", {}).get("sha256")
+        stats = data.get("stats", {})
+        results = data.get("results", {})
 
-        if not sha:
-            sha = hashlib.sha256(file_data).hexdigest()
+        sha = hashlib.sha256(file_data).hexdigest()
 
-        report = (
-            "✅ Проверка завершена!\n\n"
-            f"Файл: {name}\n"
-            f"Обнаружено: {stats.get('malicious', 0)}\n"
-            f"Подозрительно: {stats.get('suspicious', 0)}\n"
-            f"Без обнаружений: {stats.get('undetected', 0)}\n\n"
-            f"Отчёт: https://www.virustotal.com/gui/file/{sha}"
+        malicious = stats.get("malicious", 0)
+        suspicious = stats.get("suspicious", 0)
+        undetected = stats.get("undetected", 0)
+        harmless = stats.get("harmless", 0)
+
+        total = sum(
+            value for value in stats.values()
+            if isinstance(value, int)
         )
 
-        send(chat_id, report)
+        if malicious:
+            verdict = "🔴 ОБНАРУЖЕНА УГРОЗА"
+        elif suspicious:
+            verdict = "🟠 ПОДОЗРИТЕЛЬНЫЙ ФАЙЛ"
+        else:
+            verdict = "🟢 УГРОЗ НЕ ОБНАРУЖЕНО"
+
+        detections = []
+
+        for engine, item in results.items():
+            category = item.get("category", "")
+
+            if category in ("malicious", "suspicious"):
+                threat = item.get("result") or "Название не указано"
+
+                detections.append(
+                    f"• {engine}: {threat}"
+                )
+
+        report = (
+            f"{verdict}\n\n"
+            f"📁 Файл: {name}\n"
+            f"🧪 Всего проверок: {total}\n\n"
+            f"🔴 Обнаружено: {malicious}\n"
+            f"🟠 Подозрительно: {suspicious}\n"
+            f"🟢 Без обнаружений: {undetected + harmless}\n"
+        )
+
+        if detections:
+            report += "\n🦠 ОБНАРУЖЕННЫЕ УГРОЗЫ:\n"
+            report += "\n".join(detections[:20])
+
+            if len(detections) > 20:
+                report += f"\nИ ещё {len(detections) - 20} обнаружений."
+        else:
+            report += "\n🦠 Обнаруженных угроз нет."
+
+        report += (
+            f"\n\n📊 Полный отчёт:\n"
+            f"https://www.virustotal.com/gui/file/{sha}"
+        )
+
+        send(chat_id, report[:4000])
+
+    except requests.HTTPError as e:
+        print("HTTP ERROR:", repr(e))
+        if e.response is not None:
+            print("DETAILS:", e.response.text[:500])
+        send(chat_id, "Ошибка запроса. Проверь Logs на Render.")
 
     except Exception as e:
         print("ERROR:", repr(e))
