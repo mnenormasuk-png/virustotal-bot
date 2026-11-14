@@ -31,7 +31,7 @@ def send(chat_id, text):
 def scan(chat_id, doc):
     try:
         file_id = doc["file_id"]
-        name = doc.get("file_name", "file")
+        name = doc.get("file_name") or "file"
 
         if doc.get("file_size", 0) > 20 * 1024 * 1024:
             send(chat_id, "Файл больше 20 МБ.")
@@ -126,11 +126,9 @@ def webhook():
 
     elif message.get("document"):
         doc = message["document"]
-        name = doc.get("file_name", "").lower()
+        name = (doc.get("file_name") or "").lower()
 
-        if not name:
-            send(chat_id, "У файла должно быть название.")
-        elif name.endswith(VIDEO_EXTENSIONS):
+        if name.endswith(VIDEO_EXTENSIONS):
             send(chat_id, "Отправь обычный файл, не GIF и не видео.")
         else:
             threading.Thread(
