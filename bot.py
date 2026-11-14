@@ -79,6 +79,7 @@ def scan(chat_id, doc):
             timeout=30
         )
         info_response.raise_for_status()
+
         info = info_response.json()
 
         if not info.get("ok"):
@@ -92,6 +93,7 @@ def scan(chat_id, doc):
             timeout=120
         )
         content.raise_for_status()
+
         file_data = content.content
 
         if len(file_data) > MAX_SIZE:
@@ -99,6 +101,7 @@ def scan(chat_id, doc):
             return
 
         if has_video_or_gif_signature(file_data):
+            send(chat_id, "Видео и GIF проверять нельзя.")
             return
 
         send(chat_id, "🔍 Отправляю файл на проверку VirusTotal...")
@@ -162,10 +165,7 @@ def scan(chat_id, doc):
 
             if category in ("malicious", "suspicious"):
                 threat = item.get("result") or "Название не указано"
-
-                detections.append(
-                    f"• {engine}: {threat}"
-                )
+                detections.append(f"• {engine}: {threat}")
 
         report = (
             f"{verdict}\n\n"
@@ -177,11 +177,13 @@ def scan(chat_id, doc):
         )
 
         if detections:
-            report += "\n🦠 ОБНАРУЖЕННЫЕ УГРОЗЫ:\n"
-            report += "\n".join(detections[:20])
+            report += "\n🦠 ОБНАРУЖЕННЫЕ УГРОЗЫ:\n\n"
+            report += "\n\n".join(detections[:20])
 
             if len(detections) > 20:
-                report += f"\nИ ещё {len(detections) - 20} обнаружений."
+                report += (
+                    f"\n\nИ ещё {len(detections) - 20} обнаружений."
+                )
         else:
             report += "\n🦠 Обнаруженных угроз нет."
 
@@ -194,8 +196,10 @@ def scan(chat_id, doc):
 
     except requests.HTTPError as e:
         print("HTTP ERROR:", repr(e))
+
         if e.response is not None:
             print("DETAILS:", e.response.text[:500])
+
         send(chat_id, "Ошибка запроса. Проверь Logs на Render.")
 
     except Exception as e:
@@ -212,21 +216,20 @@ def home():
 def webhook():
     update = request.get_json(silent=True) or {}
     message = update.get("message", {})
+
     chat_id = message.get("chat", {}).get("id")
 
     if not chat_id:
         return "OK"
 
-    if message.get("text") == "/start":
-        send(chat_id, "Привет! Отправь мне файл для проверки VirusTotal.")
-
-    elif message.get("video") or message.get("animation"):
+    if message.get("video") or message.get("animation"):
         return "OK"
 
-    elif message.get("document"):
+    if message.get("document"):
         doc = message["document"]
 
         if is_video_or_gif(doc):
+            send(chat_id, "Видео и GIF проверять нельзя.")
             return "OK"
 
         threading.Thread(
