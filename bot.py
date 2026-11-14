@@ -21,10 +21,24 @@ VIDEO_EXTENSIONS = (
 
 
 def send(chat_id, text):
-    requests.post(
-        TG_API + "/sendMessage",
-        json={"chat_id": chat_id, "text": text},
-        timeout=20
+    try:
+        requests.post(
+            TG_API + "/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=20
+        )
+    except Exception as e:
+        print("SEND ERROR:", repr(e))
+
+
+def is_video_or_gif(doc):
+    name = (doc.get("file_name") or "").lower()
+    mime = (doc.get("mime_type") or "").lower()
+
+    return (
+        name.endswith(VIDEO_EXTENSIONS)
+        or mime.startswith("video/")
+        or mime == "image/gif"
     )
 
 
@@ -37,11 +51,13 @@ def scan(chat_id, doc):
             send(chat_id, "Файл больше 20 МБ.")
             return
 
-        info = requests.get(
+        info_response = requests.get(
             TG_API + "/getFile",
             params={"file_id": file_id},
             timeout=20
-        ).json()
+        )
+        info_response.raise_for_status()
+        info = info_response.json()
 
         if not info.get("ok"):
             send(chat_id, "Не удалось получить файл из Telegram.")
@@ -54,6 +70,19 @@ def scan(chat_id, doc):
             timeout=60
         )
         content.raise_for_status()
+
+        # Проверяем настоящий тип файла по содержимому
+        file_start = content.content[:16]
+
+        if (
+            file_start[:3] == b"GIF"
+            or file_start[:4] == b"RIFF"
+            and file_start[8:12] == b"WEBP"
+            or file_start[4:8] == b"ftyp"
+            or file_start[:4] == b"\x1a\x45\xdf\xa3"
+        ):
+            send(chat_id, "Видео и GIF не проверяются.")
+            return
 
         send(chat_id, "🔍 Отправляю файл на проверку VirusTotal...")
 
@@ -129,9 +158,8 @@ def webhook():
 
     elif message.get("document"):
         doc = message["document"]
-        name = (doc.get("file_name") or "").lower()
 
-        if name.endswith(VIDEO_EXTENSIONS):
+        if is_video_or_gif(doc):
             return "OK"
 
         threading.Thread(
@@ -155,4 +183,4 @@ if url:
         print("WEBHOOK:", response.status_code, response.text)
     except Exception as e:
         print("WEBHOOK ERROR:", repr(e))
-    
+        
