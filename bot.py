@@ -118,8 +118,9 @@ def scan(chat_id, doc):
 
         data = {}
 
-        for _ in range(24):
-            time.sleep(10)
+        # Проверяем готовность каждые 3 секунды
+        for _ in range(80):
+            time.sleep(3)
 
             result = requests.get(
                 VT_API + "/analyses/" + analysis_id,
@@ -133,7 +134,10 @@ def scan(chat_id, doc):
             if data.get("status") == "completed":
                 break
         else:
-            send(chat_id, "Проверка ещё выполняется. Попробуй позже.")
+            send(
+                chat_id,
+                "Проверка ещё выполняется. Попробуй позже."
+            )
             return
 
         stats = data.get("stats", {})
@@ -165,7 +169,9 @@ def scan(chat_id, doc):
 
             if category in ("malicious", "suspicious"):
                 threat = item.get("result") or "Название не указано"
-                detections.append(f"• {engine}: {threat}")
+                detections.append(
+                    f"• {engine}: {threat}"
+                )
 
         report = (
             f"{verdict}\n\n"
@@ -251,6 +257,7 @@ if url:
             timeout=20
         )
         print("WEBHOOK:", response.status_code, response.text)
+
     except Exception as e:
         print("WEBHOOK ERROR:", repr(e))
         
