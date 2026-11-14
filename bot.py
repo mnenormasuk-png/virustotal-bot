@@ -14,6 +14,11 @@ VT = os.environ["VT_API_KEY"]
 TG_API = f"https://api.telegram.org/bot{TG}"
 VT_API = "https://www.virustotal.com/api/v3"
 
+VIDEO_EXTENSIONS = (
+    ".gif", ".mp4", ".mov", ".webm", ".avi",
+    ".mkv", ".mpeg", ".mpg", ".3gp"
+)
+
 
 def send(chat_id, text):
     requests.post(
@@ -120,16 +125,26 @@ def webhook():
         send(chat_id, "Привет! Отправь мне файл для проверки VirusTotal.")
 
     elif message.get("document"):
-        threading.Thread(
-            target=scan,
-            args=(chat_id, message["document"]),
-            daemon=True
-        ).start()
+        doc = message["document"]
+        name = doc.get("file_name", "").lower()
+
+        if not name:
+            send(chat_id, "У файла должно быть название.")
+        elif name.endswith(VIDEO_EXTENSIONS):
+            send(chat_id, "Отправь обычный файл, не GIF и не видео.")
+        else:
+            threading.Thread(
+                target=scan,
+                args=(chat_id, doc),
+                daemon=True
+            ).start()
+
+    elif message.get("video") or message.get("animation"):
+        send(chat_id, "Видео и GIF проверять нельзя. Отправь обычный файл.")
 
     return "OK"
 
 
-# Установка webhook при запуске Gunicorn на Render
 url = os.environ.get("RENDER_EXTERNAL_URL")
 
 if url:
@@ -142,4 +157,4 @@ if url:
         print("WEBHOOK:", response.status_code, response.text)
     except Exception as e:
         print("WEBHOOK ERROR:", repr(e))
-            
+        
