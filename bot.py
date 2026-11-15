@@ -21,6 +21,8 @@ VIDEO_EXTENSIONS = (
     ".mkv", ".mpeg", ".mpg", ".3gp", ".m4v"
 )
 
+HEADERS = {"x-apikey": VT}
+
 
 def send(chat_id, text):
     try:
@@ -31,6 +33,21 @@ def send(chat_id, text):
         )
     except Exception as e:
         print("SEND ERROR:", repr(e))
+
+
+def send_long(chat_id, text):
+    while text:
+        if len(text) <= 4000:
+            send(chat_id, text)
+            break
+
+        cut = text.rfind("\n\n", 0, 4000)
+
+        if cut == -1:
+            cut = 4000
+
+        send(chat_id, text[:cut])
+        text = text[cut:].lstrip()
 
 
 def is_video_or_gif(doc):
@@ -62,6 +79,85 @@ def has_video_or_gif_signature(data):
         return True
 
     return False
+
+
+def get_report(sha):
+    response = requests.get(
+        f"{VT_API}/files/{sha}",
+        headers=HEADERS,
+        timeout=30
+    )
+
+    if response.status_code == 404:
+        return None
+
+    response.raise_for_status()
+
+    return response.json()["data"]["attributes"]
+
+
+def make_report(name, sha, data, cached=False):
+    stats = data.get(
+        "last_analysis_stats",
+        data.get("stats", {})
+    )
+
+    results = data.get(
+        "last_analysis_results",
+        data.get("results", {})
+    )
+
+    malicious = stats.get("malicious", 0)
+    suspicious = stats.get("suspicious", 0)
+    undetected = stats.get("undetected", 0)
+    harmless = stats.get("harmless", 0)
+
+    total = sum(
+        value for value in stats.values()
+        if isinstance(value, int)
+    )
+
+    if malicious:
+        verdict = "🔴 ОБНАРУЖЕНА УГРОЗА"
+    elif suspicious:
+        verdict = "🟠 ПОДОЗРИТЕЛЬНЫЙ ФАЙЛ"
+    else:
+        verdict = "🟢 УГРОЗ НЕ ОБНАРУЖЕНО"
+
+    detections = []
+
+    for engine, item in results.items():
+        category = item.get("category", "")
+
+        if category in ("malicious", "suspicious"):
+            threat = item.get("result") or "Название не указано"
+            detections.append(f"• {engine}: {threat}")
+
+    report = (
+        f"{verdict}\n\n"
+        f"📁 Файл: {name}\n"
+        f"🧪 Всего проверок: {total}\n\n"
+        f"🔴 Обнаружено: {malicious}\n"
+        f"🟠 Подозрительно: {suspicious}\n"
+        f"🟢 Без обнаружений: {undetected + harmless}\n"
+    )
+
+    if cached:
+        report += "\n⚡ Использован сохранённый отчёт VirusTotal.\n"
+
+    if detections:
+        report += "\n🦠 ОБНАРУЖЕННЫЕ УГРОЗЫ:\n\n"
+        report += "\n\n".join(detections)
+
+    else:
+        report += "\n🦠 Обнаруженных угроз нет."
+
+    report += (
+        f"\n\n📊 Полный отчёт:\n"
+        f"https://www.virustotal.com/gui/file/{sha}"
+    )
+
+    return report
 
 
 def scan(chat_id, doc):
@@ -104,11 +200,26 @@ def scan(chat_id, doc):
             send(chat_id, "Видео и GIF проверять нельзя.")
             return
 
-        send(chat_id, "🔍 Отправляю файл на проверку VirusTotal...")
+        sha = hashlib.sha256(file_data).hexdigest()
+
+        send(chat_id, "🔍 Проверяю, есть ли готовый отчёт...")
+
+        # Сначала ищем файл в базе VirusTotal
+        old_report = get_report(sha)
+
+        if old_report is not None:
+            send_long(
+                chat_id,
+                make_report(name, sha, old_report, cached=True)
+            )
+            return
+
+        # Если файла нет, отправляем его на анализ
+        send(chat_id, "🧪 Файл новый. Запускаю проверку VirusTotal...")
 
         response = requests.post(
             VT_API + "/files",
-            headers={"x-apikey": VT},
+            headers=HEADERS,
             files={"file": (name, file_data)},
             timeout=300
         )
@@ -118,13 +229,14 @@ def scan(chat_id, doc):
 
         data = {}
 
-        # Проверяем готовность каждые 3 секунды
-        for _ in range(80):
-            time.sleep(3)
+        # Проверяем с интервалом 15 секунд,
+        # чтобы не превышать лимиты VirusTotal
+        for _ in range(20):
+            time.sleep(15)
 
             result = requests.get(
-                VT_API + "/analyses/" + analysis_id,
-                headers={"x-apikey": VT},
+                f"{VT_API}/analyses/{analysis_id}",
+                headers=HEADERS,
                 timeout=30
             )
             result.raise_for_status()
@@ -133,80 +245,31 @@ def scan(chat_id, doc):
 
             if data.get("status") == "completed":
                 break
+
         else:
             send(
                 chat_id,
-                "Проверка ещё выполняется. Попробуй позже."
+                "Проверка ещё выполняется. "
+                f"Отчёт: https://www.virustotal.com/gui/file/{sha}"
             )
             return
 
-        stats = data.get("stats", {})
-        results = data.get("results", {})
-
-        sha = hashlib.sha256(file_data).hexdigest()
-
-        malicious = stats.get("malicious", 0)
-        suspicious = stats.get("suspicious", 0)
-        undetected = stats.get("undetected", 0)
-        harmless = stats.get("harmless", 0)
-
-        total = sum(
-            value for value in stats.values()
-            if isinstance(value, int)
+        send_long(
+            chat_id,
+            make_report(name, sha, data)
         )
-
-        if malicious:
-            verdict = "🔴 ОБНАРУЖЕНА УГРОЗА"
-        elif suspicious:
-            verdict = "🟠 ПОДОЗРИТЕЛЬНЫЙ ФАЙЛ"
-        else:
-            verdict = "🟢 УГРОЗ НЕ ОБНАРУЖЕНО"
-
-        detections = []
-
-        for engine, item in results.items():
-            category = item.get("category", "")
-
-            if category in ("malicious", "suspicious"):
-                threat = item.get("result") or "Название не указано"
-                detections.append(
-                    f"• {engine}: {threat}"
-                )
-
-        report = (
-            f"{verdict}\n\n"
-            f"📁 Файл: {name}\n"
-            f"🧪 Всего проверок: {total}\n\n"
-            f"🔴 Обнаружено: {malicious}\n"
-            f"🟠 Подозрительно: {suspicious}\n"
-            f"🟢 Без обнаружений: {undetected + harmless}\n"
-        )
-
-        if detections:
-            report += "\n🦠 ОБНАРУЖЕННЫЕ УГРОЗЫ:\n\n"
-            report += "\n\n".join(detections[:20])
-
-            if len(detections) > 20:
-                report += (
-                    f"\n\nИ ещё {len(detections) - 20} обнаружений."
-                )
-        else:
-            report += "\n🦠 Обнаруженных угроз нет."
-
-        report += (
-            f"\n\n📊 Полный отчёт:\n"
-            f"https://www.virustotal.com/gui/file/{sha}"
-        )
-
-        send(chat_id, report[:4000])
 
     except requests.HTTPError as e:
         print("HTTP ERROR:", repr(e))
 
         if e.response is not None:
-            print("DETAILS:", e.response.text[:500])
+            print("DETAILS:", e.response.text[:1000])
 
-        send(chat_id, "Ошибка запроса. Проверь Logs на Render.")
+        send(
+            chat_id,
+            "Ошибка запроса VirusTotal. "
+            "Проверь Logs на Render."
+        )
 
     except Exception as e:
         print("ERROR:", repr(e))
@@ -228,7 +291,15 @@ def webhook():
     if not chat_id:
         return "OK"
 
+    if message.get("text") == "/start":
+        send(
+            chat_id,
+            "Привет! Отправь мне файл, и я проверю его через VirusTotal."
+        )
+        return "OK"
+
     if message.get("video") or message.get("animation"):
+        send(chat_id, "Видео и GIF проверять нельзя.")
         return "OK"
 
     if message.get("document"):
@@ -256,8 +327,8 @@ if url:
             json={"url": url + "/webhook"},
             timeout=20
         )
+
         print("WEBHOOK:", response.status_code, response.text)
 
     except Exception as e:
         print("WEBHOOK ERROR:", repr(e))
-        
