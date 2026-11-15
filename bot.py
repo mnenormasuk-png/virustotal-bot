@@ -3,6 +3,7 @@ import os
 import time
 import threading
 import hashlib
+import html
 import requests
 from flask import Flask, request
 
@@ -26,11 +27,21 @@ VIDEO_EXTENSIONS = (
 
 def send(chat_id, text):
     try:
-        requests.post(
+        response = requests.post(
             TG_API + "/sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML"
+            },
             timeout=20
         )
+        response.raise_for_status()
+
+        result = response.json()
+        if not result.get("ok"):
+            print("TELEGRAM ERROR:", result)
+
     except Exception as e:
         print("SEND ERROR:", repr(e))
 
@@ -115,7 +126,6 @@ def upload_file(name, file_data):
 
         response = requests.post(
             upload_url,
-            headers=HEADERS,
             files={"file": (name, file_data)},
             timeout=300
         )
@@ -157,11 +167,15 @@ def make_report(name, sha, data, cached=False):
     for engine, item in results.items():
         if item.get("category") in ("malicious", "suspicious"):
             threat = item.get("result") or "Название не указано"
-            detections.append(f"• {engine}: {threat}")
+
+            detections.append(
+                f"• {html.escape(str(engine))}: "
+                f"{html.escape(str(threat))}"
+            )
 
     report = (
         f"{verdict}\n\n"
-        f"📁 Файл: {name}\n"
+        f"📁 Файл: {html.escape(str(name))}\n"
         f"🧪 Всего проверок: {total}\n\n"
         f"🔴 Обнаружено: {malicious}\n"
         f"🟠 Подозрительно: {suspicious}\n"
@@ -178,8 +192,8 @@ def make_report(name, sha, data, cached=False):
         report += "\n🦠 Обнаруженных угроз нет."
 
     report += (
-        f"\n\n📊 Полный отчёт:\n"
-        f"https://www.virustotal.com/gui/file/{sha}"
+        "\n\n<a href=\"https://www.virustotal.com/gui/file/"
+        f"{sha}\">📊 Открыть полный отчёт VirusTotal</a>"
     )
 
     return report
@@ -229,7 +243,6 @@ def scan(chat_id, doc):
 
         send(chat_id, "🔍 Закидываю файл в VirusTotal...")
 
-        # Ищем готовый отчёт
         old_report = get_report(sha)
 
         if old_report is not None:
@@ -239,12 +252,10 @@ def scan(chat_id, doc):
             )
             return
 
-        # Если отчёта нет — загружаем файл
         analysis_id = upload_file(name, file_data)
 
         send(chat_id, "⏳ Файл отправлен. Ожидаю результат...")
 
-        # Ожидаем завершения анализа
         for _ in range(60):
             time.sleep(5)
 
@@ -259,15 +270,16 @@ def scan(chat_id, doc):
 
             if data.get("status") == "completed":
                 break
+
         else:
             send(
                 chat_id,
-                "Проверка ещё выполняется.\n"
+                "Проверка ещё выполняется. "
+                "Открой отчёт VirusTotal по ссылке ниже:\n"
                 f"https://www.virustotal.com/gui/file/{sha}"
             )
             return
 
-        # Получаем полный отчёт о файле
         final_report = get_report(sha)
 
         if final_report is None:
@@ -346,4 +358,4 @@ if url:
 
     except Exception as e:
         print("WEBHOOK ERROR:", repr(e))
-            
+    
