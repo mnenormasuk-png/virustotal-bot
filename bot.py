@@ -32,13 +32,14 @@ def send(chat_id, text):
             json={
                 "chat_id": chat_id,
                 "text": text,
-                "parse_mode": "HTML"
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
             },
             timeout=20
         )
-        response.raise_for_status()
 
         result = response.json()
+
         if not result.get("ok"):
             print("TELEGRAM ERROR:", result)
 
@@ -47,17 +48,17 @@ def send(chat_id, text):
 
 
 def send_long(chat_id, text):
-    while text:
-        if len(text) <= 4000:
-            send(chat_id, text)
-            break
-
+    while len(text) > 4000:
         cut = text.rfind("\n\n", 0, 4000)
+
         if cut == -1:
             cut = 4000
 
         send(chat_id, text[:cut])
         text = text[cut:].lstrip()
+
+    if text:
+        send(chat_id, text)
 
 
 def is_video_or_gif(doc):
@@ -131,7 +132,16 @@ def upload_file(name, file_data):
         )
 
     response.raise_for_status()
+
     return response.json()["data"]["id"]
+
+
+def report_link(sha):
+    return (
+        '<a href="https://www.virustotal.com/gui/file/'
+        + sha
+        + '">📊 Открыть полный отчёт VirusTotal</a>'
+    )
 
 
 def make_report(name, sha, data, cached=False):
@@ -183,7 +193,9 @@ def make_report(name, sha, data, cached=False):
     )
 
     if cached:
-        report += "\n⚡ Использован сохранённый отчёт VirusTotal.\n"
+        report += (
+            "\n⚡ Использован сохранённый отчёт VirusTotal.\n"
+        )
 
     if detections:
         report += "\n🦠 ОБНАРУЖЕННЫЕ УГРОЗЫ:\n\n"
@@ -191,10 +203,7 @@ def make_report(name, sha, data, cached=False):
     else:
         report += "\n🦠 Обнаруженных угроз нет."
 
-    report += (
-        "\n\n<a href=\"https://www.virustotal.com/gui/file/"
-        f"{sha}\">📊 Открыть полный отчёт VirusTotal</a>"
-    )
+    report += "\n\n" + report_link(sha)
 
     return report
 
@@ -256,6 +265,9 @@ def scan(chat_id, doc):
 
         send(chat_id, "⏳ Файл отправлен. Ожидаю результат...")
 
+        completed = False
+        data = {}
+
         for _ in range(60):
             time.sleep(5)
 
@@ -269,14 +281,14 @@ def scan(chat_id, doc):
             data = result.json()["data"]["attributes"]
 
             if data.get("status") == "completed":
+                completed = True
                 break
 
-        else:
+        if not completed:
             send(
                 chat_id,
-                "Проверка ещё выполняется. "
-                "Открой отчёт VirusTotal по ссылке ниже:\n"
-                f"https://www.virustotal.com/gui/file/{sha}"
+                "Проверка ещё выполняется.\n\n"
+                + report_link(sha)
             )
             return
 
@@ -318,7 +330,9 @@ def webhook():
     if not chat_id:
         return "OK"
 
-    if message.get("text") == "/start":
+    text = message.get("text", "")
+
+    if text and text.split("@")[0] == "/start":
         send(
             chat_id,
             "Привет! Отправь файл для проверки VirusTotal."
@@ -358,4 +372,4 @@ if url:
 
     except Exception as e:
         print("WEBHOOK ERROR:", repr(e))
-    
+        
