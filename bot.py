@@ -39,12 +39,12 @@ def send(chat_id, text, reply_to=None):
         payload["reply_to_message_id"] = reply_to
 
     try:
-        resp = tg_session.post(
+        r = tg_session.post(
             f"{TG_API}/sendMessage",
             json=payload,
             timeout=20
         )
-        data = resp.json()
+        data = r.json()
         if not data.get("ok"):
             print("TELEGRAM ERROR:", data)
         return data.get("result", {}).get("message_id")
@@ -58,7 +58,7 @@ def edit_msg(chat_id, message_id, text):
         return send(chat_id, text)
 
     try:
-        resp = tg_session.post(
+        r = tg_session.post(
             f"{TG_API}/editMessageText",
             json={
                 "chat_id": chat_id,
@@ -69,7 +69,7 @@ def edit_msg(chat_id, message_id, text):
             },
             timeout=20
         )
-        if not resp.json().get("ok"):
+        if not r.json().get("ok"):
             send(chat_id, text)
     except Exception:
         send(chat_id, text)
@@ -77,7 +77,6 @@ def edit_msg(chat_id, message_id, text):
 
 def send_long(chat_id, text, first_msg_id=None):
     chunks = []
-
     while len(text) > 4000:
         cut = text.rfind("\n", 0, 4000)
         if cut == -1:
@@ -106,80 +105,57 @@ def is_video_or_gif_meta(doc):
     )
 
 
-def has_video_or_gif_signature(header: bytes) -> bool:
-    if header.startswith((b"GIF87a", b"GIF89a")):
-        return True
+def get_existing_report(sha):
+    r = vt_session.get(f"{VT_API}/files/{sha}", timeout=20)
 
-    if len(header) >= 12 and header[4:8] == b"ftyp":
-        return True
-
-    if header.startswith(b"\x1a\x45\xdf\xa3"):
-        return True
-
-    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"AVI ":
-        return True
-
-    return False
-
-
-def get_existing_report(sha: str):
-    resp = vt_session.get(
-        f"{VT_API}/files/{sha}",
-        timeout=20
-    )
-
-    if resp.status_code == 404:
+    if r.status_code == 404:
         return None
-
-    if resp.status_code == 429:
+    if r.status_code == 429:
         return "RATE_LIMIT"
 
-    resp.raise_for_status()
+    r.raise_for_status()
 
-    attrs = resp.json().get("data", {}).get("attributes", {})
+    attrs = r.json().get("data", {}).get("attributes", {})
     stats = attrs.get("last_analysis_stats", {})
-    total = sum(v for v in stats.values() if isinstance(v, int))
 
-    if total > 0:
+    if sum(v for v in stats.values() if isinstance(v, int)) > 0:
         return attrs
 
     return None
 
 
-def upload_file(name: str, file_data: bytes) -> str:
+def upload_file(name, file_data):
     if len(file_data) <= 32 * 1024 * 1024:
-        resp = vt_session.post(
+        r = vt_session.post(
             f"{VT_API}/files",
             files={"file": (name, file_data)},
             timeout=180
         )
     else:
-        url_resp = vt_session.get(
+        u = vt_session.get(
             f"{VT_API}/files/upload_url",
             timeout=20
         )
-        url_resp.raise_for_status()
+        u.raise_for_status()
 
-        upload_url = url_resp.json()["data"]
-
-        resp = vt_session.post(
-            upload_url,
+        r = vt_session.post(
+            u.json()["data"],
             files={"file": (name, file_data)},
             timeout=300
         )
 
-    resp.raise_for_status()
-    return resp.json()["data"]["id"]
+    r.raise_for_status()
+    return r.json()["data"]["id"]
 
 
-def report_link(sha: str) -> str:
+def report_link(sha):
     return (
         f'<a href="https://www.virustotal.com/gui/file/{sha}">'
         f'📊 Открыть полный отчёт VirusTotal</a>'
     )
 
 
-def make_report(name: str, sha: str, data: dict, cached: bool = False) -> str:
+def make_report(name, sha, data, cached=False):
     stats = data.get("last_analysis_stats") or data.get("stats") or {}
     results = data.get("last_analysis_results") or data.get("results") or {}
 
@@ -190,23 +166,12 @@ def make_report(name: str, sha: str, data: dict, cached: bool = False) -> str:
 
     total = malicious + suspicious + undetected + harmless
 
-    if malicious > 0:
+    if malicious:
         verdict = "🔴 ОБНАРУЖЕНА УГРОЗА"
-    elif suspicious > 0:
+    elif suspicious:
         verdict = "🟠 ПОДОЗРИТЕЛЬНЫЙ ФАЙЛ"
     else:
         verdict = "🟢 УГРОЗ НЕ ОБНАРУЖЕНО"
-
-    detections = []
-
-    for engine, item in results.items():
-        if item.get("category") in ("malicious", "suspicious"):
-            threat = item.get("result") or "Подозрительный объект"
-
-            detections.append(
-                f"• <b>{html.escape(str(engine))}</b>: "
-                f"<code>{html.escape(str(threat))}</code>"
-            )
 
     report = (
         f"<b>{verdict}</b>\n\n"
@@ -219,34 +184,33 @@ def make_report(name: str, sha: str, data: dict, cached: bool = False) -> str:
     )
 
     if cached:
-        report += (
-            "\n⚡ <i>Мгновенный результат "
-            "(файл уже был в базе VirusTotal).</i>\n"
-        )
+        report += "\n⚡ <i>Мгновенный результат из базы VirusTotal.</i>\n"
+
+    detections = [
+        f"• <b>{html.escape(str(engine))}</b>: "
+        f"<code>{html.escape(str(item.get('result') or 'Подозрительный объект'))}</code>"
+        for engine, item in results.items()
+        if item.get("category") in ("malicious", "suspicious")
+    ]
 
     if detections:
         report += "\n🦠 <b>СРАБОТАВШИЕ АНТИВИРУСЫ:</b>\n"
-        shown = detections[:40]
-        report += "\n".join(shown)
+        report += "\n".join(detections[:40])
 
         if len(detections) > 40:
-            report += (
-                f"\n<i>...и ещё {len(detections) - 40} "
-                "(см. полный отчёт)</i>"
-            )
+            report += f"\n...и ещё {len(detections) - 40}"
+
     else:
         report += "\n✅ <b>Ни один антивирус не обнаружил угроз.</b>"
 
     report += "\n\n" + report_link(sha)
-
     return report
 
 
-def download_and_hash(file_path: str):
-    sha256 = hashlib.sha256()
+def download_and_hash(file_path):
+    sha = hashlib.sha256()
     chunks = []
-    total_size = 0
-    first_chunk = True
+    size = 0
 
     with tg_session.get(
         f"{TG_FILE_API}/{file_path}",
@@ -259,198 +223,122 @@ def download_and_hash(file_path: str):
             if not chunk:
                 continue
 
-            if first_chunk:
-                first_chunk = False
+            size += len(chunk)
+            if size > MAX_TG_SIZE:
+                return None, None
 
-                if has_video_or_gif_signature(chunk[:32]):
-                    return None, None, "VIDEO_SIGNATURE"
-
-            total_size += len(chunk)
-
-            if total_size > MAX_TG_SIZE:
-                return None, None, "TOO_LARGE"
-
-            sha256.update(chunk)
+            sha.update(chunk)
             chunks.append(chunk)
 
-    return b"".join(chunks), sha256.hexdigest(), None
+    return b"".join(chunks), sha.hexdigest()
 
 
-def scan(chat_id: int, doc: dict, msg_id: int):
-    status_msg_id = None
+def scan(chat_id, doc, msg_id):
+    status_id = None
 
     try:
-        file_id = doc["file_id"]
         name = doc.get("file_name") or "file"
-        file_size = doc.get("file_size", 0)
 
-        if file_size > MAX_TG_SIZE:
-            send(
-                chat_id,
-                "❌ <b>Файл слишком большой.</b>\n"
-                "Telegram позволяет ботам скачивать файлы до <b>20 МБ</b>.",
-                reply_to=msg_id
-            )
+        if is_video_or_gif_meta(doc):
             return
 
-        status_msg_id = send(
+        if doc.get("file_size", 0) > MAX_TG_SIZE:
+            send(chat_id, "❌ Файл слишком большой. Лимит 20 МБ.", msg_id)
+            return
+
+        status_id = send(
             chat_id,
             "📥 Получаю файл и проверяю хеш...",
-            reply_to=msg_id
+            msg_id
         )
 
-        info_resp = tg_session.get(
+        info = tg_session.get(
             f"{TG_API}/getFile",
-            params={"file_id": file_id},
+            params={"file_id": doc["file_id"]},
             timeout=20
-        )
-
-        info = info_resp.json()
+        ).json()
 
         if not info.get("ok"):
-            edit_msg(
-                chat_id,
-                status_msg_id,
-                "❌ Не удалось скачать файл из Telegram."
-            )
+            edit_msg(chat_id, status_id, "❌ Не удалось получить файл.")
             return
 
-        file_path = info["result"]["file_path"]
+        file_data, sha = download_and_hash(info["result"]["file_path"])
 
-        file_data, sha, err = download_and_hash(file_path)
-
-        # Видео и GIF полностью игнорируются
-        if err == "VIDEO_SIGNATURE":
-            if status_msg_id:
-                try:
-                    tg_session.post(
-                        f"{TG_API}/deleteMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "message_id": status_msg_id
-                        },
-                        timeout=10
-                    )
-                except Exception:
-                    pass
-            return
-
-        if err == "TOO_LARGE":
-            edit_msg(
-                chat_id,
-                status_msg_id,
-                "❌ Файл превышает лимит 20 МБ."
-            )
+        if file_data is None:
+            edit_msg(chat_id, status_id, "❌ Файл превышает лимит 20 МБ.")
             return
 
         existing = get_existing_report(sha)
 
         if existing == "RATE_LIMIT":
-            edit_msg(
-                chat_id,
-                status_msg_id,
-                "⚠️ Превышен лимит запросов VirusTotal. "
-                "Подождите 30 секунд."
-            )
+            edit_msg(chat_id, status_id, "⚠️ Лимит VirusTotal. Попробуйте позже.")
             return
 
         if existing is not None:
             send_long(
                 chat_id,
-                make_report(name, sha, existing, cached=True),
-                first_msg_id=status_msg_id
+                make_report(name, sha, existing, True),
+                status_id
             )
             return
 
         edit_msg(
             chat_id,
-            status_msg_id,
-            "📤 Это новый файл, его ещё нет в базе.\n"
-            "Отправляю в VirusTotal на анализ..."
+            status_id,
+            "📤 Отправляю новый файл в VirusTotal..."
         )
 
         analysis_id = upload_file(name, file_data)
-
         del file_data
 
         for attempt in range(1, 9):
             edit_msg(
                 chat_id,
-                status_msg_id,
-                f"⏳ Антивирусы проверяют файл... ({attempt * 15} сек.)\n\n"
-                f"<i>Можно открыть результат по ссылке:</i>\n"
-                f"{report_link(sha)}"
+                status_id,
+                f"⏳ Проверка антивирусами... {attempt * 15} сек.\n\n"
+                + report_link(sha)
             )
 
             time.sleep(15)
 
-            res = vt_session.get(
+            r = vt_session.get(
                 f"{VT_API}/analyses/{analysis_id}",
                 timeout=20
             )
 
-            if res.status_code == 429:
-                time.sleep(15)
+            if r.status_code == 429:
                 continue
 
-            res.raise_for_status()
+            r.raise_for_status()
 
-            attrs = res.json().get("data", {}).get("attributes", {})
-            status = attrs.get("status")
-            stats = attrs.get("stats", {})
+            attrs = r.json().get("data", {}).get("attributes", {})
 
-            done_engines = sum(
-                v for v in stats.values() if isinstance(v, int)
-            )
+            if attrs.get("status") == "completed":
+                final = get_existing_report(sha)
 
-            if status == "completed" or done_engines >= 55:
-                final_report = get_existing_report(sha)
-
-                if not isinstance(final_report, dict):
-                    final_report = attrs
+                if not isinstance(final, dict):
+                    final = attrs
 
                 send_long(
                     chat_id,
-                    make_report(name, sha, final_report),
-                    first_msg_id=status_msg_id
+                    make_report(name, sha, final),
+                    status_id
                 )
                 return
 
         edit_msg(
             chat_id,
-            status_msg_id,
-            "⚠️ <b>Очередь VirusTotal перегружена.</b>\n"
-            "Итоговый результат появится по ссылке:\n\n"
+            status_id,
+            "⚠️ Проверка ещё выполняется. Результат:\n\n"
             + report_link(sha)
         )
 
-    except requests.HTTPError as e:
-        print("HTTP ERROR:", repr(e))
-
-        if e.response is not None:
-            print("DETAILS:", e.response.text[:500])
-
-            if e.response.status_code == 429:
-                edit_msg(
-                    chat_id,
-                    status_msg_id,
-                    "⚠️ Достигнут лимит бесплатного ключа VirusTotal. "
-                    "Попробуйте через минуту."
-                )
-                return
-
-        edit_msg(
-            chat_id,
-            status_msg_id,
-            "❌ Ошибка при обращении к API. Проверьте логи."
-        )
-
     except Exception as e:
-        print("ERROR:", repr(e))
+        print("SCAN ERROR:", repr(e))
         edit_msg(
             chat_id,
-            status_msg_id,
-            "❌ Произошла ошибка при проверке. Попробуйте позже."
+            status_id,
+            "❌ Ошибка при проверке. Попробуйте позже."
         )
 
 
@@ -475,21 +363,21 @@ def webhook():
     if text and text.split("@")[0] == "/start":
         send(
             chat_id,
-            "👋 <b>Привет!</b> Отправь мне любой файл (до 20 МБ), "
+            "👋 <b>Привет!</b> Отправь мне любой файл до 20 МБ, "
             "и я проверю его через <b>VirusTotal</b>.\n\n"
-            "⚡ Если файл уже знаком базе VirusTotal, "
-            "ты получишь отчёт за 1 секунду!"
+            "⚡ Знакомые файлы проверяются по готовому отчёту."
         )
         return "OK"
 
-    # Видео и GIF игнорируются без сообщений
-    if message.get("video") or message.get("animation"):
+    # Игнорируем видео, GIF и видеосообщения
+    if any(key in message for key in (
+        "video", "animation", "video_note"
+    )):
         return "OK"
 
     doc = message.get("document")
 
     if doc:
-        # Проверка типа и расширения до запуска потока
         if is_video_or_gif_meta(doc):
             return "OK"
 
@@ -507,7 +395,7 @@ def setup_webhook():
 
     if url:
         try:
-            resp = tg_session.post(
+            r = tg_session.post(
                 f"{TG_API}/setWebhook",
                 json={
                     "url": f"{url.rstrip('/')}/webhook",
@@ -515,17 +403,14 @@ def setup_webhook():
                 },
                 timeout=20
             )
-
-            print("WEBHOOK:", resp.status_code, resp.text)
-
+            print("WEBHOOK:", r.status_code, r.text)
         except Exception as e:
             print("WEBHOOK ERROR:", repr(e))
 
 
 setup_webhook()
 
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    
+            
